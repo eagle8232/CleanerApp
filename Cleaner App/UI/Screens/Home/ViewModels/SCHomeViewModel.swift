@@ -77,6 +77,8 @@ class SCHomeViewModel: ObservableObject {
         
         NotificationCenter.default.addObserver(self, selector: #selector(batteryLevelDidChange), name: UIDevice.batteryLevelDidChangeNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(batteryStateDidChange), name: UIDevice.batteryStateDidChangeNotification, object: nil)
+        
+        logBatteryStatus()
     }
     
     @objc private func batteryLevelDidChange(notification: Notification) {
@@ -85,5 +87,13 @@ class SCHomeViewModel: ObservableObject {
     
     @objc private func batteryStateDidChange(notification: Notification) {
         isCharging = UIDevice.current.batteryState == .charging || UIDevice.current.batteryState == .full
+    }
+    
+    func logBatteryStatus() {
+        let rawBatteryLevel = UIDevice.current.batteryLevel
+        print("Raw Battery Level: \(rawBatteryLevel)")
+        let batteryPercentage = Int(round(rawBatteryLevel * 100))
+        print("Battery Level: \(batteryPercentage)%")
+        print("Battery State: \(UIDevice.current.batteryState)")
     }
 }

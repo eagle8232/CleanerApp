@@ -23,7 +23,6 @@ class SCDuplicatedPhotosViewModel: ObservableObject {
     // MARK: - Duplicate Photos Detection
     
     func findDuplicatePhotos() {
-
         PHPhotoLibrary.requestAuthorization { [weak self] status in
             guard let self else { return }
             
@@ -35,12 +34,10 @@ class SCDuplicatedPhotosViewModel: ObservableObject {
                 let assets = PHAsset.fetchAssets(with: .image, options: fetchOptions)
                 
                 var duplicates: [SCDuplicatePhoto] = []
-                var assetHashes: [String: [PHAsset]] = [:] // Dictionary to group assets by image hash
+                var assetFeatures: [String: [PHAsset]] = [:]
                 
-                // Step 1: Group assets based on image hashes
                 assets.enumerateObjects { asset, _, _ in
                     
-                    // Fetch the image
                     let options = PHImageRequestOptions()
                     options.isSynchronous = true
                     var image: UIImage?
@@ -49,24 +46,23 @@ class SCDuplicatedPhotosViewModel: ObservableObject {
                         image = result
                     }
                     
-                    // If image is available, calculate its hash
-                    if let image = image, let hash = self.averageHash(for: image) {
-                        if assetHashes[hash] != nil {
-                            assetHashes[hash]?.append(asset)
+                    if let image = image {
+                        let features = self.extractFeatures(from: image)
+                        let featureKey = self.generateFeatureKey(from: features)
+                        if assetFeatures[featureKey] != nil {
+                            assetFeatures[featureKey]?.append(asset)
                         } else {
-                            assetHashes[hash] = [asset]
+                            assetFeatures[featureKey] = [asset]
                         }
                         
-                        // Here, we store the `localIdentifier` of the asset in `imageName`
                         let photo = SCPhoto(imageName: asset.localIdentifier, imageData: image)
                         photos.append(photo)
                     }
                 }
                 
-                // Step 2: Find groups with more than one asset (indicating duplicates)
-                for (hash, assets) in assetHashes {
+                
+                for (featureKey, assets) in assetFeatures {
                     if assets.count > 1 {
-                        // Fetch image data for each asset
                         let duplicatePhotos = assets.compactMap { asset -> SCPhoto? in
                             var image: UIImage?
                             let options = PHImageRequestOptions()
@@ -77,13 +73,12 @@ class SCDuplicatedPhotosViewModel: ObservableObject {
                             }
                             
                             if let image = image {
-                                return SCPhoto(imageName: asset.localIdentifier, imageData: image) // Store UIImage
+                                return SCPhoto(imageName: asset.localIdentifier, imageData: image)
                             }
                             return nil
                         }
                         
                         let groupName = self.generateDuplicateGroupName(from: assets)
-                        
                         let totalSizeMB = assets.reduce(0) { (accumulatedSize, asset) -> Double in
                             accumulatedSize + asset.fileSizeInMB()
                         }
@@ -106,35 +101,50 @@ class SCDuplicatedPhotosViewModel: ObservableObject {
             }
         }
     }
-    
-    // Helper function to compare pixel data of images
-    func findVisuallyIdenticalPhotos(from assets: [PHAsset]) -> [SCPhoto] {
-        var photos: [SCPhoto] = []
-        var identicalGroups: [[PHAsset]] = []
+
+    func extractFeatures(from image: UIImage) -> [CGFloat] {
+        guard let cgImage = image.cgImage else { return [] }
+
+        let histogramBins = 256
+        var histogramR = [CGFloat](repeating: 0, count: histogramBins)
+        var histogramG = [CGFloat](repeating: 0, count: histogramBins)
+        var histogramB = [CGFloat](repeating: 0, count: histogramBins)
+
+        let width = cgImage.width
+        let height = cgImage.height
+
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.noneSkipLast.rawValue
+        let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: colorSpace, bitmapInfo: bitmapInfo)!
         
-        for i in 0..<assets.count {
-            guard let image1 = fetchUIImage(from: assets[i]) else { continue }
-            
-            for j in (i+1)..<assets.count {
-                guard let image2 = fetchUIImage(from: assets[j]) else { continue }
-                
-                if imagesAreVisuallyIdentical(image1, image2) {
-                    identicalGroups.append([assets[i], assets[j]]) // Group identical photos
-                }
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
+
+        guard let pixelBuffer = context.data else { return [] }
+        let pixelPointer = pixelBuffer.bindMemory(to: UInt8.self, capacity: width * height * 4)
+
+        for x in 0..<width {
+            for y in 0..<height {
+                let pixelIndex = ((width * y) + x) * 4
+                let red = CGFloat(pixelPointer[pixelIndex])
+                let green = CGFloat(pixelPointer[pixelIndex + 1])
+                let blue = CGFloat(pixelPointer[pixelIndex + 2])
+
+                histogramR[Int(red)] += 1
+                histogramG[Int(green)] += 1
+                histogramB[Int(blue)] += 1
             }
         }
         
-        for group in identicalGroups {
-            let groupPhotos = group.compactMap { asset -> SCPhoto? in
-                if let image = fetchUIImage(from: asset) {
-                    return SCPhoto(imageName: asset.localIdentifier, imageData: image)
-                }
-                return nil
-            }
-            photos.append(contentsOf: groupPhotos)
-        }
-        
-        return photos
+        let pixelCount = CGFloat(width * height)
+        let normalizedHistogramR = histogramR.map { $0 / pixelCount }
+        let normalizedHistogramG = histogramG.map { $0 / pixelCount }
+        let normalizedHistogramB = histogramB.map { $0 / pixelCount }
+
+        return normalizedHistogramR + normalizedHistogramG + normalizedHistogramB
+    }
+
+    func generateFeatureKey(from features: [CGFloat]) -> String {
+        return features.map { String(format: "%.3f", $0) }.joined(separator: "-")
     }
     
     // Fetch the UIImage from the PHAsset
@@ -149,13 +159,24 @@ class SCDuplicatedPhotosViewModel: ObservableObject {
         return image
     }
     
-    
-    // Compare the pixel data of two UIImages
     func imagesAreVisuallyIdentical(_ image1: UIImage, _ image2: UIImage) -> Bool {
-        guard let data1 = image1.pngData(), let data2 = image2.pngData() else {
-            return false
-        }
-        return data1 == data2 // Compare the pixel data of both images
+        let features1 = extractFeatures(from: image1)
+        let features2 = extractFeatures(from: image2)
+        
+        let similarityThreshold: CGFloat = 0.9
+        let similarity = calculateHistogramSimilarity(features1, features2)
+        
+        return similarity >= similarityThreshold
+    }
+
+    func calculateHistogramSimilarity(_ features1: [CGFloat], _ features2: [CGFloat]) -> CGFloat {
+        guard features1.count == features2.count else { return 0 }
+        
+        let dotProduct = zip(features1, features2).reduce(0) { $0 + $1.0 * $1.1 }
+        let magnitude1 = sqrt(features1.reduce(0) { $0 + $1 * $1 })
+        let magnitude2 = sqrt(features2.reduce(0) { $0 + $1 * $1 })
+        
+        return dotProduct / (magnitude1 * magnitude2)
     }
     
     
@@ -196,17 +217,16 @@ class SCDuplicatedPhotosViewModel: ObservableObject {
         let assets = PHAsset.fetchAssets(withLocalIdentifiers: assetIdentifiers, options: nil)
         
         PHPhotoLibrary.shared().performChanges({
-            PHAssetChangeRequest.deleteAssets(assets) // Request to delete the assets
+            PHAssetChangeRequest.deleteAssets(assets)
         }) { [weak self] success, error in
             DispatchQueue.main.async {
                 if success {
                     print("Selected photos deleted.")
-                    // Update the UI after deletion
                     self?.removeDeletedPhotos(from: selectedAssets)
                 } else if let error = error {
                     print("Error deleting photos: \(error.localizedDescription)")
                 }
-                self?.isDeleting = false // Stop showing loading indicator
+                self?.isDeleting = false
             }
         }
     }
@@ -250,10 +270,7 @@ class SCDuplicatedPhotosViewModel: ObservableObject {
 
 extension SCDuplicatedPhotosViewModel {
     
-    // Convert UIImage to an 8x8 grayscale image and calculate its average hash
-    // Helper function to generate a group name based on the date or other metadata
     func generateDuplicateGroupName(from assets: [PHAsset]) -> String {
-        // Example: Use the creation date of the first asset to generate the group name
         if let firstAsset = assets.first, let creationDate = firstAsset.creationDate {
             let formatter = DateFormatter()
             formatter.dateStyle = .medium
@@ -262,18 +279,15 @@ extension SCDuplicatedPhotosViewModel {
         return "Duplicate Group"
     }
 
-    // Helper function to compute an average hash for an image (simplified example)
     func averageHash(for image: UIImage) -> String? {
         guard let cgImage = image.cgImage else { return nil }
         
-        // Resize the image to 8x8 pixels
         let size = CGSize(width: 8, height: 8)
         UIGraphicsBeginImageContext(size)
         image.draw(in: CGRect(origin: .zero, size: size))
         let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
         UIGraphicsEndImageContext()
         
-        // Get the grayscale pixel data from the resized image
         guard let grayCgImage = resizedImage?.cgImage else { return nil }
         guard let context = CGContext(data: nil,
                                       width: 8,
@@ -288,14 +302,12 @@ extension SCDuplicatedPhotosViewModel {
         
         let data = CFDataGetBytePtr(pixelData)
         
-        // Calculate the average brightness
         var totalBrightness: UInt64 = 0
         for i in 0..<64 {
             totalBrightness += UInt64(data![i])
         }
         let averageBrightness = totalBrightness / 64
         
-        // Create the hash based on brightness
         var hash = ""
         for i in 0..<64 {
             hash += data![i] >= averageBrightness ? "1" : "0"
