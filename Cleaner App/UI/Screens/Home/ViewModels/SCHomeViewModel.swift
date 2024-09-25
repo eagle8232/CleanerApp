@@ -36,7 +36,7 @@ enum SCInternetConnectionStatus: String {
 class SCHomeViewModel: ObservableObject {
     
     @Published var internetConnectionStatus: SCInternetConnectionStatus = .loading
-    @Published var batteryLevel: Float = 0.0
+    @Published var batteryState: UIDevice.BatteryState = .unknown
     @Published var isCharging: Bool = false
     @Published var isPresentingInfoView: Bool = false
     @Published var cellularSignalStrength: Int = 0
@@ -50,9 +50,11 @@ class SCHomeViewModel: ObservableObject {
         setupBatteryMonitoring()
     }
     
+    // MARK: - Public
+    
     // MARK: - Internet Connection Check
     
-    func checkInternetConnection() {
+    public func checkInternetConnection() {
         monitor = NWPathMonitor()
         let queue = DispatchQueue.global(qos: .background)
         monitor?.start(queue: queue)
@@ -68,32 +70,43 @@ class SCHomeViewModel: ObservableObject {
         }
     }
     
-    // MARK: - Battery Monitoring
+    public func batteryStateDescription() -> String {
+        switch batteryState {
+        case .charging:
+            return "Charging"
+        case .full:
+            return "Full"
+        case .unplugged:
+            return "Unplugged"
+        case .unknown:
+            return "Unknown"
+        @unknown default:
+            return "Unknown"
+        }
+    }
     
-    private func setupBatteryMonitoring() {
-        UIDevice.current.isBatteryMonitoringEnabled = true
-        batteryLevel = UIDevice.current.batteryLevel
+    // MARK: - Private
+    
+    @objc private func batteryStateDidChange(notification: Notification) {
+        batteryState = UIDevice.current.batteryState
         isCharging = UIDevice.current.batteryState == .charging || UIDevice.current.batteryState == .full
-        
-        NotificationCenter.default.addObserver(self, selector: #selector(batteryLevelDidChange), name: UIDevice.batteryLevelDidChangeNotification, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(batteryStateDidChange), name: UIDevice.batteryStateDidChangeNotification, object: nil)
         
         logBatteryStatus()
     }
     
-    @objc private func batteryLevelDidChange(notification: Notification) {
-        batteryLevel = UIDevice.current.batteryLevel
+    private func logBatteryStatus() {
+        print("Battery State: \(batteryStateDescription())")
     }
     
-    @objc private func batteryStateDidChange(notification: Notification) {
+    // MARK: - Battery Monitoring
+    
+    private func setupBatteryMonitoring() {
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        batteryState = UIDevice.current.batteryState
         isCharging = UIDevice.current.batteryState == .charging || UIDevice.current.batteryState == .full
-    }
-    
-    func logBatteryStatus() {
-        let rawBatteryLevel = UIDevice.current.batteryLevel
-        print("Raw Battery Level: \(rawBatteryLevel)")
-        let batteryPercentage = Int(round(rawBatteryLevel * 100))
-        print("Battery Level: \(batteryPercentage)%")
-        print("Battery State: \(UIDevice.current.batteryState)")
+        
+        NotificationCenter.default.addObserver(self, selector: #selector(batteryStateDidChange), name: UIDevice.batteryStateDidChangeNotification, object: nil)
+        
+        logBatteryStatus()
     }
 }

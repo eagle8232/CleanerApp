@@ -67,7 +67,7 @@ struct SCHomeViewController: View {
             
             SCPhoneInfoView(
                 image: .battery,
-                status: String(format: "%.0f%%", homeVM.batteryLevel * 100),
+                status: homeVM.batteryStateDescription(),
                 isLoading: false
             )
         }
